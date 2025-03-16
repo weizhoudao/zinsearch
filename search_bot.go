@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"unicode/utf16"
 	"fmt"
-	"log"
 	"strings"
 	"zincsearch/zincsearch"
 	"os"
@@ -91,6 +90,10 @@ func main() {
 	ch := tb.GetUpdateChan(&config)
 
 	for update := range ch {
+		if update.EditedMessage != nil || update.ChannelPost != nil || update.EditedChannelPost != nil{
+			lib.XLogInfo("skip", update.UpdateID)
+			continue
+		}
 		if update.CallbackQuery != nil{
 			go handleCallback(update.UpdateID, update.CallbackQuery)
 		}else if update.Message != nil {
@@ -167,11 +170,10 @@ func getAdFeeds(key string)model.AdFeedList{
 
 func fillEmtities(updateid int, keyword string, from int)(string, []model.MessageEntity){
 	var entities []model.MessageEntity
-	var search_chatids []string
 	var ad_chatids []string
 	var top_chatids []string
 	mapFeedTitle := make(map[string]string)
-	mapSearchTitle := make(map[string]string)
+	var doc_list []zincsearch.Document
 
 	var wg sync.WaitGroup
 
@@ -182,14 +184,13 @@ func fillEmtities(updateid int, keyword string, from int)(string, []model.Messag
 	wg.Add(1)
 	go func(){
 		defer wg.Done()
-		m, chatids, count, err := searchIndex(updateid, keyword, from, g_iPageCount)
+		result, count, err := searchIndex(updateid, keyword, from, g_iPageCount)
 		if err != nil {
 			lib.XLogErr("searchindex", updateid, keyword, from, g_iPageCount)
 			return
 		}
 		total = count
-		search_chatids = chatids
-		mapSearchTitle = m
+		doc_list = result
 	}()
 
 	wg.Add(1)
@@ -241,11 +242,8 @@ func fillEmtities(updateid int, keyword string, from int)(string, []model.Messag
 	for _, v := range top_chatids{
 		results = append(results, v)
 	}
-	for _, v := range search_chatids{
-		results = append(results, v)
-	}
 
-	if len(search_chatids) == 0{
+	if len(doc_list) == 0{
 		lib.XLogErr("empty results", updateid, keyword)
 		if from == 0{
 			msg_content = "暂无搜索结果"
@@ -254,22 +252,6 @@ func fillEmtities(updateid int, keyword string, from int)(string, []model.Messag
 		}
 		return msg_content, entities
 	}
-
-	var mapID2Chat map[string]model.Chat
-	wg.Add(1)
-	go func(){
-		defer wg.Done()
-		mapID2Chat = batchGetChatInfo(results)
-	}()
-
-	mapChat2Count := make(map[string]int)
-	wg.Add(1)
-	go func(){
-		defer wg.Done()
-		mapChat2Count = batchGetChatMemberCount(results)
-	}()
-
-	wg.Wait()
 
 	top_des := "🪧  找老师搜索引擎说明\n"
 	des := model.MessageEntity{
@@ -312,42 +294,38 @@ func fillEmtities(updateid int, keyword string, from int)(string, []model.Messag
 	msg_content += "\n"
 	// 命中关键词的
 	count := from + 1
-	for _, id := range search_chatids {
+	for _, doc := range doc_list {
 		url := model.MessageEntity{}
 		url.Type = "text_link"
-		url.URL = fmt.Sprintf("https://t.me/%v", id)
+		url.URL = fmt.Sprintf("https://t.me/%v", doc.ID)
 		url.Offset = GetUTF16Len(msg_content)
-		chat := mapID2Chat[id]
-		origin_title := chat.Title
-		if len(origin_title) == 0{
-			origin_title = mapSearchTitle[id]
+		logo := "📧"
+		if doc.ContactType == "yuni"{
+			logo = "🎭️"
 		}
-		logo := ""
-		if chat.Type == "channel"{
-			logo = "📢"
-		}else if chat.Type == "group" || chat.Type == "supergroup"{
-			logo = "👥"
+		str_user_count := strconv.Itoa(doc.UserCount)
+		if doc.UserCount > 1000{
+			str_user_count = strconv.Itoa(doc.UserCount / 1000) + "k"
 		}
-		user_count := mapChat2Count[id]
-		str_user_count := strconv.Itoa(user_count)
-		if user_count > 1000{
-			str_user_count = strconv.Itoa(user_count / 1000) + "k"
-		}
-		title := strconv.Itoa(count) + ". " + logo + origin_title + " - " + str_user_count +"人"
-
+		title := strconv.Itoa(count) + ". " + logo + doc.Title + " - " + str_user_count +"人"
 		url.Length = GetUTF16Len(title)
 		entities = append(entities, url)
 		msg_content += title + "\n"
 		count++
 	}
 	totalPages := (total + g_iPageCount - 1) / g_iPageCount
-	if len(search_chatids) != 0{
+	if len(doc_list) != 0{
 		msg_content += fmt.Sprintf("\n🔍 搜索结果（第 %d/%d 页）\n", from / 10 + 1, totalPages)
 	}
 	return msg_content, entities
 }
 
 func handleCallback(updateid int, callback *model.CallbackQuery){
+	defer func() {
+		if err := recover(); err != nil {
+			lib.XLogErr("excption", err)
+		}
+	}()
 	values := strings.Split(callback.Data, "$$")
 	if len(values) != 3{
 		lib.XLogErr("invalid callback", *callback)
@@ -380,8 +358,11 @@ func handleCallback(updateid int, callback *model.CallbackQuery){
 	var buttons []model.InlineKeyboardButton
 	buttons = append(buttons, last_page, next_page)
 
+	land_url := "tg://resolve?domain=kkhelper_bot"
+	feedback := model.InlineKeyboardButton{Text:"👣反馈搜索问题|添加频道|购买推广👣", URL: &land_url}
+
 	var markup model.InlineKeyboardMarkup
-	markup.InlineKeyboard = append(markup.InlineKeyboard, buttons)
+	markup.InlineKeyboard = append(markup.InlineKeyboard, buttons, []model.InlineKeyboardButton{feedback})
 
 	msg_config.ReplyMarkup = markup
 
@@ -389,6 +370,19 @@ func handleCallback(updateid int, callback *model.CallbackQuery){
 }
 
 func handleMessage(updateid int, msg *model.Message) {
+	defer func() {
+		if err := recover(); err != nil {
+			lib.XLogErr("excption", err)
+		}
+	}()
+	if len(msg.Text) == 0{
+		lib.XLogErr("skip empty query", updateid)
+		return
+	}
+	if msg.ForwardFrom != nil || msg.ForwardFromChat != nil || msg.ReplyToMessage != nil || msg.Animation != nil || msg.PremiumAnimation != nil || msg.Audio != nil || msg.Document != nil || len(msg.Photo) > 0 || msg.Sticker != nil || msg.Video != nil || msg.VideoNote != nil || msg.Voice != nil || len(msg.Caption) > 0 || msg.Contact != nil || msg.Dice != nil || msg.Game != nil || msg.Poll != nil || msg.Venue != nil || msg.Location != nil{
+		lib.XLogErr("skip invalid msg", updateid)
+		return
+	}
 	query := strings.TrimSpace(msg.Text)
 	if query == "" {
 		return
@@ -396,20 +390,9 @@ func handleMessage(updateid int, msg *model.Message) {
 	sendSearchResults(updateid, msg.Chat.ID, msg.MessageID, 0, query)
 }
 
-func handleCommand(msg *model.Message) {
-	switch msg.Command() {
-	case "start":
-		sendText(msg.Chat.ID, "欢迎使用频道搜索引擎！\n私聊使用/add添加索引")
-	case "help":
-		sendText(msg.Chat.ID, "命令列表：\n/add 频道ID 关键词1 关键词2... - 添加索引\n/delete 频道ID - 删除索引")
-	default:
-		sendText(msg.Chat.ID, "未知命令")
-	}
-}
-
 // 搜索ZincSearch
-func searchIndex(updateid int, query string, page int, pageSize int) (map[string]string, []string, int, error) {
-
+func searchIndex(updateid int, query string, page int, pageSize int) ([]zincsearch.Document, int, error) {
+	var result_list []zincsearch.Document
 	searchReq := &zincsearch.SearchRequest{
 		SearchType: "match",
 		Query: map[string]interface{}{
@@ -419,23 +402,54 @@ func searchIndex(updateid int, query string, page int, pageSize int) (map[string
 		From: page,
 		SortFields: []string{"-user_count"},
 	}
-
 	//lib.XLogInfo(updateid, searchReq)
 	client := zincsearch.NewClient("http://localhost:4080", zincSearchUser, zincSearchPasswd)
 	result, err := client.Search(zincIndexName, searchReq)
 	if err != nil {
-		log.Fatal(err)
+		lib.XLogErr("Search", err)
+		return result_list, 0, err
 	}
 	//lib.XLogInfo(searchReq)
-	//lib.XLogInfo(result)
-
-	mapChatID2Title := make(map[string]string, len(result.Hits.Hits))
-	var ids []string
+	lib.XLogInfo(result)
 	for _, hit := range result.Hits.Hits {
-		ids = append(ids, hit.ID)
-		mapChatID2Title[hit.ID] = hit.Source["title"].(string)
+		doc := zincsearch.Document{ID:hit.ID}
+		if hit.Source["contact_type"] != nil {
+			doc.ContactType = hit.Source["contact_type"].(string)
+			if doc.ContactType == "yuni" || doc.ContactType == "siliao"{
+				values := strings.Split(hit.ID, "_")
+				if len(values) == 2{
+					doc.ID = values[0] + "/" + values[1]
+				}
+			}
+		}
+		if hit.Source["title"] != nil{
+			doc.Title = hit.Source["title"].(string)
+		}
+		if hit.Source["description"] != nil{
+			doc.Description = hit.Source["description"].(string)
+		}
+		if hit.Source["chat_id"] != nil{
+			doc.ChatID = hit.Source["chat_id"].(string)
+		}
+		if hit.Source["user_count"] != nil{
+			tmp := hit.Source["user_count"].(float64)
+			doc.UserCount = int(tmp)
+		}
+		if hit.Source["js_name"] != nil{
+			doc.JsName = hit.Source["js_name"].(string)
+		}
+		if hit.Source["js_type"] != nil{
+			doc.JsType = hit.Source["js_type"].(string)
+		}
+		if hit.Source["location"] != nil{
+			doc.Location = hit.Source["location"].(string)
+		}
+		if hit.Source["tags"] != nil{
+			doc.Tags = hit.Source["tags"].(string)
+		}
+		result_list = append(result_list, doc)
 	}
-	return mapChatID2Title, ids, result.Hits.Total.Value, nil
+	return result_list, result.Hits.Total.Value, nil
 }
 
 

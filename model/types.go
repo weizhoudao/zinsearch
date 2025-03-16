@@ -3339,6 +3339,8 @@ type ReplyParameters struct {
 
 type LinkPreviewOptions struct {
 	IsDisable bool `json:"is_disabled,omitempty"`
+	URL string `json:"url,omitempty"`
+	PreferSmallMedia bool `json:"prefer_small_media,omitempty"`
 }
 
 type TopFeed struct {

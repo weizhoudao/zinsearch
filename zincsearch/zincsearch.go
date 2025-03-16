@@ -26,6 +26,9 @@ type Document struct {
 	JsType string `json:"js_type"`
 	Location string `json:"location"`
 	Tags string `json:"tags"`
+	// ContactType default:telegram, others:wechat,yuni,qq
+	ContactType string `json:"contact_type"`
+	ID string `json:"id"`
 }
 
 type Client struct {

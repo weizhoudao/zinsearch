@@ -3,6 +3,7 @@ package main
 import (
 	"zincsearch/lib"
 	"zincsearch/model"
+	"time"
 	"unicode/utf16"
 	"fmt"
     "github.com/redis/go-redis/v9"
@@ -69,17 +70,33 @@ func InitConfig(){
 func showJsReport(msg *model.Message){
 	reply_msg := msg.ReplyToMessage
 	feed := transferCaption(reply_msg.Caption)
+	/*
 	if len(feed.UserName) == 0{
 		lib.XLogErr("empty username", reply_msg.Caption, feed)
+		return
+	}*/
+	if len(feed.Name) == 0{
+		lib.XLogErr("empty name", reply_msg.Caption, feed)
+		return
+	}
+	cmd := "我爱" + feed.Name
+	if msg.Text != cmd{
+		lib.XLogErr("skip invalid format", msg.Text, cmd)
 		return
 	}
 	caption, emtities := generateCaptionAndEmtites(feed)
 	caption += "\n"
 
 	var index model.JsReportIndex
-	err := db.GetStruct("jsreport_index_" + feed.UserName, &index)
+	key := base64.StdEncoding.EncodeToString([]byte(feed.Name))
+	//err := db.GetStruct("jsreport_index_" + feed.UserName, &index)
+	err := db.GetStruct("jsreport_index_" + key, &index)
 	if err != nil {
-		lib.XLogErr("GetStruct", feed.UserName)
+		lib.XLogErr("GetStruct", key)
+		return
+	}
+	if len(index.Keys) == 0{
+		sendText(msg.Chat.ID, "暂未找到" + feed.Name + "的点评报告,\n 查看全部老师点评请戳\nhttps://t.me/guangzhoureport")
 		return
 	}
 	for i, v := range index.Keys{
@@ -116,6 +133,21 @@ func showJsReport(msg *model.Message){
 		},
 	}
 
+	if err := tb.Call(&config); err != nil{
+		lib.XLogErr("showreport", err)
+	}else{
+		// 创建定时删除任务
+		time.AfterFunc(5*time.Minute, func() {
+			deleteMessage(config.Response)
+		})
+	}
+}
+
+func deleteMessage(msg model.Message){
+	config := model.DeleteMessageConfig{
+		ChatID: msg.Chat.ID,
+		MessageID: msg.MessageID,
+	}
 	tb.Call(&config)
 }
 

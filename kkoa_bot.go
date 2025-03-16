@@ -4,6 +4,7 @@ import (
 	"zincsearch/lib"
 	"zincsearch/model"
 	"unicode/utf16"
+	"math/rand"
 	"fmt"
 	"time"
     "github.com/redis/go-redis/v9"
@@ -21,6 +22,7 @@ import (
 
 var g_sBotKey = ""
 var g_sBakKey = ""
+var g_sBakKeys = []string{}
 var tb model.TBot
 var adminuser = ""
 var adminchatid = int64(0)
@@ -28,9 +30,13 @@ var zincsearch_url = ""
 var zincsearch_user = ""
 var zincsearch_passwd = ""
 
+
 const (
 	mediaGroupWaitTime = 1000 * time.Millisecond // 媒体组等待时间
 	targetChatID      = -1002295970194              // 名师汇 目标会话ID
+	targetUserName = "guangzhouqm"
+	shouluChatID = -1002486530943   // 收录榜
+	shouluUserName = "guangzhoujs"
 	reportChatID = -1002302072618 // 报告群
 	reportGroupUserName = "guangzhoureport"
 )
@@ -49,11 +55,16 @@ func (c *MediaGroupCache) handleMediaGroup(msg *model.Message) {
 	mgID := msg.MediaGroupID
 	media := createInputMedia(msg)
 
+	rand_source := rand.NewSource(time.Now().UnixNano())
+	rand_triger := rand.New(rand_source)
+
+	wait_time := time.Duration(rand_triger.Intn(500)) * time.Millisecond + mediaGroupWaitTime
+
 	// 创建或更新定时器
 	if timer, exists := c.timers[mgID]; exists {
-		timer.Reset(mediaGroupWaitTime)
+		timer.Reset(wait_time)
 	} else {
-		c.timers[mgID] = time.AfterFunc(mediaGroupWaitTime, func() {
+		c.timers[mgID] = time.AfterFunc(wait_time, func() {
 			c.sendMediaGroup(mgID)
 		})
 	}
@@ -73,7 +84,7 @@ func (c *MediaGroupCache) sendMediaGroup(mgID string) {
 	}
 
 	// 创建请求
-	config := model.SendMediaGroupConfig{ChatID:targetChatID}
+	config := model.SendMediaGroupConfig{ChatID:shouluChatID}
 	config.Media = medias
 
 	if err := tb.Call(&config); err != nil{
@@ -85,8 +96,8 @@ func (c *MediaGroupCache) sendMediaGroup(mgID string) {
 			}
 			feed := transferCaption(v.Caption)
 			feed.MessageID = v.MessageID
-			feed.ChatID = targetChatID
-
+			feed.ChatID = shouluChatID
+			// 全量收录的js
 			username := strings.TrimSpace(feed.UserName)
 			key := "jsfeed_" + username
 			if err := db.SetStruct(key, feed); err != nil {
@@ -102,6 +113,26 @@ func (c *MediaGroupCache) sendMediaGroup(mgID string) {
 				if err != nil {
 					lib.XLogErr("SetStruct", err, index_key, index_list)
 				}
+			}
+			// 入搜索库
+			if len(feed.YuniID) > 0 || len(feed.ChannelUserName) < 2{
+				cmd := "search_qm " + shouluUserName + "_" + strconv.Itoa(feed.MessageID) + " " + feed.Name + " qm " + feed.Location + " "
+				for _, v := range feed.Tags{
+					cmd += v + " "
+				}
+				lib.XLogInfo(cmd)
+				contact_type := "yuni"
+				if len(feed.YuniID) == 0{
+					contact_type = "siliao"
+				}
+				insertYuniJs(0, contact_type, cmd)
+			}else if len(feed.ChannelUserName) > 1{
+				cmd := "search_qm " + feed.ChannelUserName + " " + feed.Name + " qm " + feed.Location + " "
+				for _, v := range feed.Tags{
+					cmd += v + " "
+				}
+				lib.XLogInfo(cmd)
+				insertDocument(0, cmd)
 			}
 		}
 	}
@@ -178,6 +209,11 @@ func InitConfig(){
 			zincsearch_url = line[idx + 1:]
 		}else if line[0:idx] == "bak_key"{
 			g_sBakKey = line[idx + 1:]
+		}else if line[0:idx] == "back_keys"{
+			keys := strings.Split(line[idx + 1:], ",")
+			for _, key := range keys{
+				g_sBakKeys = append(g_sBakKeys, key)
+			}
 		}
 	}
 }
@@ -200,6 +236,12 @@ func main() {
 		tb.BakKey = g_sBakKey
 		tb.UseBakKey = true
 	}
+	if len(g_sBakKeys) > 0{
+		tb.UseBakKey = true
+		for _, key := range g_sBakKeys{
+			tb.BakKeys = append(tb.BakKeys, model.KeyStatus{Key:key})
+		}
+	}
 
 	config := model.UpdateConfig{}
 	config.Offset = 0
@@ -214,6 +256,10 @@ func main() {
 
 	cur_cmd := ""
 	for update := range ch {
+		if update.ChannelPost != nil{
+			lib.XLogErr("skip post msg")
+			continue
+		}
 		if update.Message != nil{
 			if update.Message.Chat.Type != "private"{
 				lib.XLogErr("not private", update.Message.Chat.Type)
@@ -242,7 +288,7 @@ func main() {
 			}
 			if cur_cmd != ""{
 				// 处理媒体组消息
-				if mgID := update.Message.MediaGroupID; mgID != "" {
+				if (cur_cmd == "import_js"|| cur_cmd == "import_yunijs") && len(update.Message.MediaGroupID) > 0{
 					cache.handleMediaGroup(update.Message)
 				}else{
 					handleCommand(cur_cmd, update.Message)
@@ -258,10 +304,26 @@ func forwardMessageToChat(msg *model.Message, chatid int64){
 		Text: msg.Text,
 		Entities: msg.Entities,
 	}
-	tb.Call(&config)
+	tb.CallV2(&config)
 }
 
 func forwardMessage(msg *model.Message){
+	if strings.HasPrefix(msg.Text, "adddoc") || strings.HasPrefix(msg.Text, "/adddoc"){
+		items := strings.Split(msg.Text, " ")
+		if len(items) < 4{
+			sendText(msg.Chat.ID, "操作失败，格式不对")
+			return
+		}
+		cmd := "search_qm " + items[1] + " " + items[2] + " qm " + items[3] + " "
+		for i, v := range items{
+			if i < 4{
+				continue
+			}
+			cmd += v + " "
+		}
+		insertDocument(msg.Chat.ID, cmd)
+		return
+	}
 	if adminchatid == 0{
 		sendText(msg.Chat.ID, "消息发送失败，请稍后重试...")
 	}
@@ -270,11 +332,11 @@ func forwardMessage(msg *model.Message){
 		FromChatID: msg.Chat.ID,
 		MessageID: msg.MessageID,
 	}
-	tb.Call(&config)
+	tb.CallV2(&config)
 }
 
 func isCommand(text string)bool{
-	cmds := []string{"report_index", "report_detail", "import_report", "clear_jsindex", "show_jsdetail", "list_jsindex", "import_js", "create_index", "list_index", "delete_index", "insert_document", "clear", "delete_document", "add_adfeed", "list_adfeed", "delete_adfeed", "add_topfeed", "list_topfeed", "delete_topfeed", "get_chatid"}
+	cmds := []string{"import_yunijs", "import_index", "report_index", "report_detail", "import_report", "clear_jsindex", "show_jsdetail", "list_jsindex", "import_js", "create_index", "list_index", "delete_index", "insert_document", "clear", "delete_document", "add_adfeed", "list_adfeed", "delete_adfeed", "add_topfeed", "list_topfeed", "delete_topfeed", "get_chatid"}
 	for _, v := range cmds{
 		if text == v{
 			return true
@@ -336,6 +398,39 @@ func batchInsertDocument(chatid int64, text string)error{
 	return nil
 }
 
+// index_name postid jsname jstype location tags1 tags2
+func insertYuniJs(chatid int64, contact_type, text string)error{
+	values := strings.Split(text, " ")
+	str_tags := ""
+	for i, v := range values{
+		if i < 5{
+			continue
+		}
+		str_tags += "#" + v
+	}
+
+	title := values[4] + values[2]
+	if contact_type == "yuni"{
+		title += "的与你"
+	}else if contact_type == "siliao"{
+		title += "的飞机号"
+	}
+
+	client := zincsearch.NewClient(zincsearch_url, zincsearch_user, zincsearch_passwd)
+	doc := zincsearch.Document{
+		Title: title,
+		Description: "",
+		ChatID: values[1],
+		UserCount: 1,
+		JsName: values[2],
+		JsType: values[3],
+		Location: values[4],
+		Tags: str_tags,
+		ContactType: contact_type,
+	}
+	return client.UpdateDocument(values[0], values[1], doc)
+}
+
 func insertDocument(chatid int64, text string)error{
 	data := strings.TrimSpace(text)
 	values := strings.Split(data, " ")
@@ -344,7 +439,11 @@ func insertDocument(chatid int64, text string)error{
 		return nil
 	}
 	// index_name chatid jsname jstype tags1 tags2 ....
-	user_count_config := model.GetChatMemberCountConfig{ChatID: "@"+values[1]}
+	user_name := values[1]
+	if strings.HasPrefix(user_name, "@"){
+		user_name = user_name[1:]
+	}
+	user_count_config := model.GetChatMemberCountConfig{ChatID: "@" + user_name}
 	param, err := json.Marshal(user_count_config)
 	if err != nil{
 		lib.XLogErr("marlshal", err, user_count_config)
@@ -365,8 +464,8 @@ func insertDocument(chatid int64, text string)error{
 		return err
 	}
 
-	chatinfo_config := model.GetChatConfig{ChatID: "@" + values[1]}
-	err = tb.Call(&chatinfo_config)
+	chatinfo_config := model.GetChatConfig{ChatID: "@" + user_name}
+	err = tb.CallV2(&chatinfo_config)
 	if err != nil{
 		lib.XLogErr("getchatinfo", err)
 		sendText(chatid, "操作失败")
@@ -385,15 +484,16 @@ func insertDocument(chatid int64, text string)error{
 	client := zincsearch.NewClient(zincsearch_url, zincsearch_user, zincsearch_passwd)
 	doc := zincsearch.Document{
 		Title: chat.Title,
-		Description: chat.Description,
+		Description: "",
 		ChatID: values[1],
 		UserCount: user_count_obj.Result,
 		JsName: values[2],
 		JsType: values[3],
 		Location: values[4],
 		Tags: str_tags,
+		ContactType: "telegram",
 	}
-	return client.UpdateDocument(values[0], values[1], doc)
+	return client.UpdateDocument(values[0], user_name, doc)
 }
 
 func deleteDocument(chatid int64, text string)error{
@@ -425,7 +525,7 @@ func addAdfeed(chatid int64, text string)error{
 
 	list := getAdFeeds("zincsearch_bot_adfeeds")
 	chatinfo_config := model.GetChatConfig{ChatID: "@" + values[0]}
-	err := tb.Call(&chatinfo_config)
+	err := tb.CallV2(&chatinfo_config)
 	if err != nil{
 		lib.XLogErr("getchatinfo", err)
 		sendText(chatid, "操作失败")
@@ -486,7 +586,7 @@ func addTopfeed(chatid int64, text string)error{
 	list := getAdFeeds(key)
 
 	chatinfo_config := model.GetChatConfig{ChatID: "@" + values[1]}
-	err := tb.Call(&chatinfo_config)
+	err := tb.CallV2(&chatinfo_config)
 	if err != nil{
 		lib.XLogErr("getchatinfo", err)
 		sendText(chatid, "操作失败")
@@ -766,20 +866,34 @@ func transferCaption(input string)(model.JsFeed){
 	lines := strings.Split(text, "\n")
 	tags := ""
 	for _, line := range lines{
-		if strings.Contains(line, "地址"){
+		lib.XLogInfo("line", line)
+		if strings.Contains(line, "地区") || strings.Contains(line, "地址") || strings.Contains(line, "位置"){
 			tmp := strings.TrimSpace(line)
 			values := strings.Split(tmp, ":")
 			if len(values) <= 1{
 				values = strings.Split(tmp, "：")
 			}
 			location := strings.TrimSpace(values[1])
+			if strings.Contains(location, "💴"){
+				items := strings.Split(location, "💴")
+				if len(items) > 1{
+					raw_price := items[1]
+					if len(strings.Split(raw_price, "#")) > 1{
+						feed.Price = append(feed.Price, strings.Split(raw_price, "#")[1])
+					}else{
+						feed.Price = append(feed.Price, strings.TrimSpace(raw_price))
+					}
+				}
+				location = items[0]
+			}
+			location = strings.TrimSpace(location)
 			if strings.HasPrefix(location, "#"){
 				feed.Location = location[1:]
 			}else{
 				feed.Location = location
 			}
 		}
-		if strings.Contains(line, "艺名"){
+		if strings.Contains(line, "昵称") || strings.Contains(line, "花名") || strings.Contains(line, "艺名"){
 			tmp := strings.TrimSpace(line)
 			values := strings.Split(tmp, ":")
 			if len(values) <= 1{
@@ -787,6 +901,9 @@ func transferCaption(input string)(model.JsFeed){
 			}
 			name := strings.TrimSpace(values[1])
 			names := strings.Split(name, " ")
+			if len(names) == 1{
+				names = strings.Split(name, "✅")
+			}
 			for i, v := range names{
 				if i == 0{
 					if strings.HasPrefix(v, "#"){
@@ -798,7 +915,7 @@ func transferCaption(input string)(model.JsFeed){
 				tags += " " + v
 			}
 		}
-		if strings.Contains(line, "价格"){
+		if strings.Contains(line, "课费") || strings.Contains(line, "价格") || strings.Contains(line, "水费"){
 			tmp := strings.TrimSpace(line)
 			values := strings.Split(tmp, ":")
 			if len(values) <= 1{
@@ -813,7 +930,7 @@ func transferCaption(input string)(model.JsFeed){
 				}
 			}
 		}
-		if strings.Contains(line, "频道"){
+		if strings.Contains(line, "订阅") || strings.Contains(line, "频道"){
 			tmp := strings.TrimSpace(line)
 			var values []string
 			if len(strings.Split(tmp, ":")) > 1{
@@ -836,7 +953,7 @@ func transferCaption(input string)(model.JsFeed){
 				feed.ChannelUserName = "@" + url[idx + 1:]
 			}
 		}
-		if strings.Contains(line, "私聊"){
+		if strings.Contains(line, "私聊") || strings.Contains(line, "电报"){
 			tmp := strings.TrimSpace(line)
 			values := strings.Split(tmp, ":")
 			if len(values) <= 1{
@@ -844,7 +961,15 @@ func transferCaption(input string)(model.JsFeed){
 			}
 			feed.UserName = strings.TrimSpace(values[1])
 		}
-		if strings.Contains(line, "状态") || strings.Contains(line, "标签"){
+		if strings.Contains(line, "与你"){
+			tmp := strings.TrimSpace(line)
+			values := strings.Split(tmp, ":")
+			if len(values) <= 1{
+				values = strings.Split(tmp, "：")
+			}
+			feed.YuniID = strings.TrimSpace(values[1])
+		}
+		if strings.Contains(line, "特色") || strings.Contains(line, "状态") || strings.Contains(line, "标签"){
 			tmp := strings.TrimSpace(line)
 			values := strings.Split(tmp, ":")
 			if len(values) <= 1{
@@ -855,7 +980,14 @@ func transferCaption(input string)(model.JsFeed){
 	}
 	tag_item := strings.Split(strings.TrimSpace(tags), " ")
 	for _, v := range tag_item{
-		feed.Tags = append(feed.Tags, strings.TrimSpace(v))
+		if strings.Contains(v, "审核") || strings.Contains(v, "验证"){
+			continue
+		}
+		tag := strings.TrimSpace(v)
+		if !strings.HasPrefix(tag, "#"){
+			tag = "#" + tag
+		}
+		feed.Tags = append(feed.Tags, tag)
 	}
 	return feed
 }
@@ -884,6 +1016,9 @@ func generateCaptionAndEmtites(feed model.JsFeed)(string, []model.MessageEntity)
 	}
 	emtities = append(emtities, pindao)
 	text += feed.ChannelUserName + "\n"
+	if len(feed.YuniID) > 0{
+		text += "与你: " + feed.YuniID + "\n"
+	}
 	text += "标签: "
 	for _, v := range feed.Tags{
 		tag := model.MessageEntity{
@@ -954,11 +1089,31 @@ func getValue(line string)string{
 }
 
 func importReport(chatid int64, text string)error{
+	defer func() {
+		if err := recover(); err != nil {
+			lib.XLogErr("excption", err)
+		}
+	}()
 	var report model.JsReport
+	telegram_url := "https://t.me"
+	skip_lines := []string{"报告", "【工兵报告】", "广州潮流一线", "联邦报告", "点击查看老师资料", "【温馨提醒】"}
 	data := strings.TrimSpace(text)
 	lines := strings.Split(data, "\n")
 	for _, line := range lines{
 		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, telegram_url){
+			continue
+		}
+		skip := false
+		for _, v := range skip_lines{
+			if strings.Contains(line, v){
+				skip = true
+				break
+			}
+		}
+		if skip{
+			continue
+		}
 		if strings.Contains(line, "留名】"){
 			report.Ly = getValue(line)
 		}else if strings.Contains(line, "【个人评价】"){
@@ -969,7 +1124,9 @@ func importReport(chatid int64, text string)error{
 			}else if strings.Contains(line, "差评"){
 				report.Mark = "2"
 			}
-		}else if strings.Contains(line, "【人照几成】"){
+		}else if strings.Contains(line, "【推荐程度") || strings.Contains(line, "【推荐指数】"){
+			report.Mark = getValue(line)
+		}else if strings.Contains(line, "颜值】") || strings.Contains(line, "【人照几成】") || strings.Contains(line, "【颜值身材】"){
 			report.Yanzhi = getValue(line)
 		}else if strings.Contains(line, "【验证时间】"){
 			report.Time = getValue(line)
@@ -979,12 +1136,10 @@ func importReport(chatid int64, text string)error{
 			report.Location = getValue(line)
 		}else if strings.Contains(line, "【联系方式】"){
 			report.UserName = getValue(line)
-		}else if strings.Contains(line, "【修车水费】"){
+		}else if strings.Contains(line, "价格】") || strings.Contains(line, "【修车费用】") || strings.Contains(line, "【修车水费】") || strings.Contains(line, "【上课价位】"){
 			report.Price = getValue(line)
-		}else if strings.Contains(line, "【服务态度】"){
+		}else if strings.Contains(line, "【服务态度】") || strings.Contains(line, "性格】"){
 			report.Taidu = getValue(line)
-		}else if strings.Contains(line, "点击查看老师资料") || strings.Contains(line, "【温馨提醒】") || strings.Contains(line, "点击查看老师资料") || strings.Contains(line, "联邦报告"){
-			continue
 		}else if strings.Contains(line, "】"){
 			line = strings.ReplaceAll(line, ":", "")
 			line = strings.ReplaceAll(line, "：", "")
@@ -1010,7 +1165,12 @@ func importReport(chatid int64, text string)error{
 	config := model.SendMessageConfig{}
 	config.ChatID = reportChatID
 	config.Text = content
-	if err := tb.Call(&config); err != nil{
+	config.LinkPreviewOption = model.LinkPreviewOptions{
+		IsDisable: false,
+		URL: "https://t.me/guangzhoureport",
+		PreferSmallMedia: true,
+	}
+	if err := tb.CallV2(&config); err != nil{
 		sendText(chatid, "导入失败")
 		return err
 	}
@@ -1026,13 +1186,18 @@ func importReport(chatid int64, text string)error{
 		return err
 	}
 	var index model.JsReportIndex
-	err = db.GetStruct("jsreport_index_" + report.UserName, &index)
+	js_name := report.Js
+	if strings.HasPrefix(js_name, "#"){
+		js_name = report.Js[1:]
+	}
+	index_key := base64.StdEncoding.EncodeToString([]byte(js_name))
+	err = db.GetStruct("jsreport_index_" + index_key, &index)
 	if err != nil && err != redis.Nil{
 		lib.XLogErr("GetStruct", err)
 		return err
 	}
 	index.Keys = append(index.Keys, key)
-	return db.SetStruct("jsreport_index_" + report.UserName, index)
+	return db.SetStruct("jsreport_index_" + index_key, index)
 }
 
 func reportIndex(chatid int64, text string){
@@ -1060,8 +1225,71 @@ func reportDetail(chatid int64, text string){
 	sendText(chatid, fmt.Sprintf("%v\n", report))
 }
 
+func importJs(msg *model.Message){
+	//Caption/ReplyMarkup
+}
+
+// 刷一下报告的索引信息
+func importIndex(msg *model.Message){
+	defer func() {
+		if err := recover(); err != nil {
+			lib.XLogErr("excption", err)
+		}
+	}()
+	data := strings.TrimSpace(msg.Text)
+	js_username := ""
+	ly_name := ""
+	js_time := ""
+	js_name := ""
+	js_username_key := "【联系方式】"
+	js_time_key := "【上课时间】"
+	ly_name_key := "【点评校友】"
+	js_name_key := "【老师艺名】"
+	lines := strings.Split(data, "\n")
+	for _, v := range lines{
+		if strings.Contains(v, js_username_key){
+			js_username = strings.TrimSpace(strings.Split(v, js_username_key)[1])
+		}else if strings.Contains(v, js_time_key){
+			js_time = strings.TrimSpace(strings.Split(v, js_time_key)[1])
+		}else if strings.Contains(v, ly_name_key){
+			ly_name = strings.TrimSpace(strings.Split(v, ly_name_key)[1])
+		}else if strings.Contains(v, js_name_key){
+			raw_name := strings.TrimSpace(strings.Split(v, js_name_key)[1])
+			if strings.HasPrefix(raw_name, "#"){
+				js_name = raw_name[1:]
+			}else
+			{
+				js_name = strings.TrimSpace(strings.Split(v, js_name_key)[1])
+			}
+		}
+	}
+
+	tmp := js_username + "_" + ly_name + "_" + js_time
+	report_key := "jsreport_" + base64.StdEncoding.EncodeToString([]byte(tmp))
+	var report model.JsReport
+	if err := db.GetStruct(report_key, &report); err != nil{
+		lib.XLogErr("GetStruct", err, report_key)
+		return
+	}
+	var index model.JsReportIndex
+	index_key := base64.StdEncoding.EncodeToString([]byte(js_name))
+	err := db.GetStruct("jsreport_index_" + index_key, &index)
+	if err != nil && err != redis.Nil{
+		lib.XLogErr("GetStruct", err)
+		return
+	}
+	index.Keys = append(index.Keys, report_key)
+	if err := db.SetStruct("jsreport_index_" + index_key, index); err != nil{
+		lib.XLogErr("SetStruct", err, index_key)
+	}
+}
+
 func handleCommand(cmd string, msg *model.Message){
-	if cmd == "report_index"{
+	if cmd == "import_index"{
+		importIndex(msg)
+	}else if cmd == "import_js"{
+		importJs(msg)
+	}else if cmd == "report_index"{
 		reportIndex(msg.Chat.ID, msg.Text)
 	}else if cmd == "report_detail"{
 		reportDetail(msg.Chat.ID, msg.Text)

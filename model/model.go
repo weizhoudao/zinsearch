@@ -213,6 +213,8 @@ type AnswerCallbackQueryConfig struct {
 type DeleteMessageConfig struct {
 	ChatID int64 `json:"chat_id"`
 	MessageID int `json:"message_id"`
+
+	Response bool `json:"result"`
 }
 
 type GetChatConfig struct {
