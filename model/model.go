@@ -178,6 +178,8 @@ type PinChatMessageConfig struct {
 type CreateForumTopicConfig struct {
 	ChatID int64 `json:"chat_id"`
 	Name string `json:"name"`
+
+	Response CreateForumTopicResult `json:"result"`
 }
 
 type CreateForumTopicResult struct {
@@ -255,6 +257,7 @@ type ForwardMessageConfig struct{
 	ChatID any `json:"chat_id,omitempty"`
 	FromChatID any `json:"from_chat_id,omitempty"`
 	MessageID int `json:"message_id,omitempty"`
+	MessageThreadId int `json:"message_thread_id"`
 
 	Response Message `json:"result,omitempty"`
 }

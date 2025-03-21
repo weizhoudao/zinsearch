@@ -232,6 +232,7 @@ func extractMedia(msg *model.Message, photos, videos []string)([]string, []strin
 func main() {
 	InitConfig()
 	tb.BotKey = g_sBotKey
+	tb.ShutdownChannel = make(chan interface{})
 	if len(g_sBakKey) > 0{
 		tb.BakKey = g_sBakKey
 		tb.UseBakKey = true
@@ -336,7 +337,7 @@ func forwardMessage(msg *model.Message){
 }
 
 func isCommand(text string)bool{
-	cmds := []string{"import_yunijs", "import_index", "report_index", "report_detail", "import_report", "clear_jsindex", "show_jsdetail", "list_jsindex", "import_js", "create_index", "list_index", "delete_index", "insert_document", "clear", "delete_document", "add_adfeed", "list_adfeed", "delete_adfeed", "add_topfeed", "list_topfeed", "delete_topfeed", "get_chatid"}
+	cmds := []string{"get_js_report", "import_yunijs", "import_index", "report_index", "report_detail", "import_report", "clear_jsindex", "show_jsdetail", "list_jsindex", "import_js", "create_index", "list_index", "delete_index", "insert_document", "clear", "delete_document", "add_adfeed", "list_adfeed", "delete_adfeed", "add_topfeed", "list_topfeed", "delete_topfeed", "get_chatid"}
 	for _, v := range cmds{
 		if text == v{
 			return true
@@ -1284,8 +1285,26 @@ func importIndex(msg *model.Message){
 	}
 }
 
+func GetJsReport(msg *model.Message){
+	jsname := strings.TrimSpace(msg.Text)
+	var index model.JsReportIndex
+	index_key := base64.StdEncoding.EncodeToString([]byte(jsname))
+	err := db.GetStruct("jsreport_index_" + index_key, &index)
+	if err != nil && err != redis.Nil{
+		lib.XLogErr("GetStruct", err)
+		return
+	}
+	text := ""
+	for _, key := range index.Keys{
+		text += key + "\n"
+	}
+	sendText(msg.Chat.ID, text)
+}
+
 func handleCommand(cmd string, msg *model.Message){
-	if cmd == "import_index"{
+	if cmd == "get_js_report"{
+		GetJsReport(msg)
+	}else if cmd == "import_index"{
 		importIndex(msg)
 	}else if cmd == "import_js"{
 		importJs(msg)
