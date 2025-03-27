@@ -21,6 +21,7 @@ import (
 )
 
 var g_sBotKey = ""
+var g_follow_groups = []string{}
 var adminuser = ""
 
 func GetUTF16Len(content string)int{
@@ -235,26 +236,47 @@ func (b *Bot) StopTask(userid, botid int64) {
 	}
 }
 
-func (b *Bot) HandleStart(chatid int64)error{
+func (b *Bot) HandleStart(logid string, chatid int64)error{
 	msg := b.NewStartMessage(chatid)
 	config := model.SendMessageConfig{
 		ChatID: chatid,
 		Text: msg.Text,
 		ReplyMarkup: *(msg.ReplyMarkup),
 	}
-	return b.BotAPI.Call(&config)
+	if err := b.BotAPI.Call(&config); err != nil{
+		lib.XLogErr(logid, "SendMessage, config", config, "err", err)
+		return err
+	}
+	return nil
 }
 
-func (b *Bot) HandleNewBot(chatid int64, msgid int, callbackdata string)error{
+func (b *Bot) HandleNewBot(logid string, chatid int64, msgid int, callbackdata string)error{
 	bot_list, err := GetChatBotList(chatid)
 	if err != nil{
-		lib.XLogErr("GetChatBotList, userid", chatid)
+		lib.XLogErr(logid, "GetChatBotList, userid", chatid)
 		b.SendText(chatid, "系统繁忙,请稍候再试")
 		return err
 	}
+	// 检查用户是否关注了群列表
+	for _, groupid := range g_follow_groups{
+		config := model.GetChatMemberConfig{
+			ChatID:"@" + groupid,
+			UserID:chatid,
+		}
+		if err := b.BotAPI.Call(&config); err != nil{
+			lib.XLogErr(logid, "GetChatMember", groupid, chatid, err)
+			b.SendText(chatid, "系统繁忙,请稍候再试")
+			return err
+		}
+		if config.Response.Status != "member" && config.Response.Status != "administrator" && config.Response.Status != "creator"{
+			lib.XLogErr("not group member", groupid, chatid)
+			b.SendText(chatid, "使用双向机器人需要先关注/加入我们的群/频道: @" + groupid)
+			return nil
+		}
+	}
 	vipinfo, err := GetVipInfo(chatid)
 	if err != nil{
-		lib.XLogErr("GetVipInfo", chatid, err)
+		lib.XLogErr(logid, "GetVipInfo, userid", chatid, "err", err)
 		b.SendText(chatid, "系统繁忙,请稍候再试")
 		return err
 	}
@@ -298,7 +320,7 @@ func (b *Bot) HandleNewBot(chatid int64, msgid int, callbackdata string)error{
 		markup.InlineKeyboard = append(markup.InlineKeyboard, []model.InlineKeyboardButton{return_btn})
 		config.ReplyMarkup = markup
 		if err := b.BotAPI.Call(&config); err != nil{
-			lib.XLogErr("SendMessage", config, err);
+			lib.XLogErr(logid, "SendMessage, config", config, "err", err);
 		}
 	}else{
 		config := model.SendMessageConfig{
@@ -307,23 +329,27 @@ func (b *Bot) HandleNewBot(chatid int64, msgid int, callbackdata string)error{
 			Entities: entities,
 		}
 		if err := b.BotAPI.Call(&config); err != nil{
-			lib.XLogErr("SendMessage", config, err);
+			lib.XLogErr(logid, "SendMessage, config", config, "err", err);
 		}
 	}
-	return SetOperStatus(chatid, "wait")
+	if err := SetOperStatus(chatid, "wait"); err != nil{
+		lib.XLogErr(logid, "SetOperStatus, chatid", chatid, "err", err)
+		return err
+	}
+	return nil
 }
 
-func (b *Bot) HandleMyBot(chatid int64, msgid int, callback_data string)error{
+func (b *Bot) HandleMyBot(logid string, chatid int64, msgid int, callback_data string)error{
 	is_callback := len(callback_data) > 0
 	bot_list, err := GetChatBotList(chatid)
 	if err != nil {
-		lib.XLogErr("GetChatBotList", chatid, err)
+		lib.XLogErr(logid, "GetChatBotList, chatid", chatid, "err", err)
 		return err
 	}
 	if len(bot_list.BotList) == 0{
 		config := model.SendMessageConfig{ChatID:chatid, Text:"你还没有创建双向机器人"}
 		if err := b.BotAPI.Call(&config); err != nil{
-			lib.XLogErr("SendMessage", err)
+			lib.XLogErr(logid, "SendMessage, err", err)
 			b.SendText(chatid, "系统异常,请稍后重试")
 			return err
 		}
@@ -331,14 +357,14 @@ func (b *Bot) HandleMyBot(chatid int64, msgid int, callback_data string)error{
 	}
 	msg, err := b.NewMyBotMessage(chatid, msgid, bot_list)
 	if err != nil{
-		lib.XLogErr("NewMyBotMessage", chatid, msgid, err)
+		lib.XLogErr(logid, "NewMyBotMessage, chatid", chatid, "msgid", msgid, "err", err)
 		return err
 	}
 	if is_callback{
 		config := model.EditMessageTextConfig{ChatID:chatid, MessageID:msgid, Text:msg.Text}
 		config.ReplyMarkup = *(msg.ReplyMarkup)
 		if err := b.BotAPI.Call(&config); err != nil{
-			lib.XLogErr("EditMessage", err, config)
+			lib.XLogErr(logid, "EditMessage, err", err, "config", config)
 			b.SendText(chatid, "系统异常,请稍候重试")
 			return err
 		}
@@ -346,7 +372,7 @@ func (b *Bot) HandleMyBot(chatid int64, msgid int, callback_data string)error{
 		config := model.SendMessageConfig{ChatID:chatid, Text:msg.Text}
 		config.ReplyMarkup = *(msg.ReplyMarkup)
 		if err := b.BotAPI.Call(&config); err != nil{
-			lib.XLogErr("SendMessage", err, config)
+			lib.XLogErr(logid, "SendMessage, err", err, "config", config)
 			b.SendText(chatid, "系统异常,请稍候重试")
 			return err
 		}
@@ -383,15 +409,15 @@ func (b *Bot) NewMyBotMessage(chatid int64, msgid int, bot_list model.ChatBotLis
 	return msg, nil
 }
 
-func (b *Bot) HandleReturnMyBot(chatid int64, msgid int)error{
+func (b *Bot) HandleReturnMyBot(logid string, chatid int64, msgid int)error{
 	bot_list, err := GetChatBotList(chatid)
 	if err != nil {
-		lib.XLogErr("GetChatBotList", chatid, err)
+		lib.XLogErr(logid, "GetChatBotList, chatid", chatid, "err", err)
 		return err
 	}
 	msg, err := b.NewMyBotMessage(chatid, msgid, bot_list)
 	if err != nil{
-		lib.XLogErr("NewMyBotMessage", chatid, msgid, err)
+		lib.XLogErr(logid, "NewMyBotMessage, chatid", chatid, "msgid", msgid, "err", err)
 		return err
 	}
 	config := model.EditMessageTextConfig{
@@ -402,26 +428,26 @@ func (b *Bot) HandleReturnMyBot(chatid int64, msgid int)error{
 		ReplyMarkup: *(msg.ReplyMarkup),
 	}
 	if err := b.BotAPI.Call(&config); err != nil{
-		lib.XLogErr("EditedMessage", config, err)
+		lib.XLogErr(logid, "EditedMessage, config", config, "err", err)
 		return err
 	}
 	return nil
 }
 
-func (b *Bot) HandleViewBot(chatid int64, msgid int, callback_data string)error{
+func (b *Bot) HandleViewBot(logid string, chatid int64, msgid int, callback_data string)error{
 	values := strings.Split(callback_data, "_")
 	if len(values) != 3{
-		lib.XLogErr("invalid callbackdata", chatid, callback_data)
+		lib.XLogErr(logid, "invalid callbackdata, chatid", chatid, "callbackdata", callback_data)
 		return errors.New("invalid callbackdata")
 	}
 	botid, err := strconv.ParseInt(values[2], 10, 64)
 	if err != nil{
-		lib.XLogErr("invalid botid", err, callback_data)
+		lib.XLogErr(logid, "invalid botid, err", err, "callbackdata", callback_data)
 		return err
 	}
 	msg, err := b.NewViewBotMessage(chatid, botid, msgid)
 	if err != nil{
-		lib.XLogErr("NewViewBotMessage", chatid, botid, err)
+		lib.XLogErr(logid, "NewViewBotMessage, chatid", chatid, "botid", botid, "err", err)
 		return err
 	}
 
@@ -435,20 +461,20 @@ func (b *Bot) HandleViewBot(chatid int64, msgid int, callback_data string)error{
 	return b.BotAPI.Call(&msg_config)
 }
 
-func (b *Bot)HandleDeleteBot(chatid int64, callback_data string)error{
+func (b *Bot)HandleConfirmDelete(logid string, chatid int64, msgid int, callback_data string)error{
 	values := strings.Split(callback_data, "_")
 	if len(values) != 3{
-		lib.XLogErr("invalid callbackdata", chatid, callback_data)
+		lib.XLogErr(logid, "invalid callbackdata, chatid", chatid, "callbackdata", callback_data)
 		return errors.New("invalid callbackdata")
 	}
 	botid, err := strconv.ParseInt(values[2], 10, 64)
 	if err != nil{
-		lib.XLogErr("invalid botid", err, callback_data)
+		lib.XLogErr(logid, "invalid botid, err", err, "callbackdata", callback_data)
 		return err
 	}
 	bot_list, err := GetChatBotList(chatid)
 	if err != nil{
-		lib.XLogErr("GetChatBotList", chatid, err)
+		lib.XLogErr(logid, "GetChatBotList, chatid", chatid, "err", err)
 		return err
 	}
 	var new_bot_list model.ChatBotList
@@ -459,45 +485,135 @@ func (b *Bot)HandleDeleteBot(chatid int64, callback_data string)error{
 	}
 	b.StopTask(chatid, botid)
 	SetChatBotList(chatid, new_bot_list)
+	del_config := model.DeleteMessageConfig{
+		ChatID:chatid,
+		MessageID:msgid,
+	}
+	b.BotAPI.Call(&del_config)
 	return b.SendText(chatid, "成功销毁双向机器人")
 }
+	
 
-func (b *Bot) HandleStatBot(chatid int64, callback_data string)error{
+func (b *Bot)HandleDeleteBot(logid string, chatid int64, msgid int, callback_data string)error{
 	values := strings.Split(callback_data, "_")
 	if len(values) != 3{
-		lib.XLogErr("invalid callbackdata", chatid, callback_data)
+		lib.XLogErr(logid, "invalid callbackdata, chatid", chatid, "callbackdata", callback_data)
 		return errors.New("invalid callbackdata")
 	}
 	botid, err := strconv.ParseInt(values[2], 10, 64)
 	if err != nil{
-		lib.XLogErr("invalid botid", err, callback_data)
+		lib.XLogErr(logid, "invalid botid, err", err, "callbackdata", callback_data)
+		return err
+	}
+	bot_list, err := GetChatBotList(chatid)
+	if err != nil{
+		lib.XLogErr(logid, "GetChatBotList, chatid", chatid, "err", err)
+		return err
+	}
+	found := false
+	username := ""
+	var new_bot_list model.ChatBotList
+	for _, item := range bot_list.BotList{
+		if item.ID == botid{
+			found = true
+			bot := model.TBot{BotKey:"bot" + item.Token}
+			config := model.GetMeConfig{}
+			if err := bot.Call(&config); err != nil{
+				lib.XLogErr(logid, "GetMe", err)
+				b.SendText(chatid, "系统异常,请稍后重试")
+				return err
+			}
+			username = config.Response.UserName
+			break
+		}else{
+			new_bot_list.BotList = append(new_bot_list.BotList, item)
+		}
+	}
+	if !found{
+		b.StopTask(chatid, botid)
+		SetChatBotList(chatid, new_bot_list)
+		return b.SendText(chatid, "成功销毁双向机器人")
+	}
+	text := "你确定要销毁双向机器人 "
+	bot_at := model.MessageEntity{
+		Type:"mention",
+		Offset: GetUTF16Len(text),
+		Length: GetUTF16Len("@" + username),
+	}
+	text += "@" + username + "?"
+
+	str_msgid := strconv.Itoa(msgid)
+
+	str_chatid := strconv.FormatInt(chatid, 10)
+	str_botid := strconv.FormatInt(botid, 10)
+	confirm := model.InlineKeyboardButton{Text:"销毁双向机器人"}
+	confirm_callback := str_chatid + "_confirmdelete_" + str_botid
+	confirm.CallbackData = &confirm_callback
+
+	return_text := str_chatid + "_return_viewbot_" + str_msgid + "_" + str_botid
+	return_btn := model.InlineKeyboardButton{Text:"返回上一步"}
+	return_btn.CallbackData = &return_text
+
+	var markup model.InlineKeyboardMarkup
+	markup.InlineKeyboard = append(markup.InlineKeyboard, []model.InlineKeyboardButton{confirm}, []model.InlineKeyboardButton{return_btn})
+	entities := []model.MessageEntity{bot_at}
+
+	config := model.EditMessageTextConfig{
+		ChatID:chatid,
+		MessageID:msgid,
+		Entities:entities,
+		Text:text,
+		ReplyMarkup:markup,
+	}
+	return b.BotAPI.Call(&config)
+}
+
+func (b *Bot) HandleStatBot(logid string, chatid int64, callback_data string)error{
+	values := strings.Split(callback_data, "_")
+	if len(values) != 3{
+		lib.XLogErr(logid, "invalid callbackdata, chatid", chatid, "callbackdata", callback_data)
+		return errors.New("invalid callbackdata")
+	}
+	botid, err := strconv.ParseInt(values[2], 10, 64)
+	if err != nil{
+		lib.XLogErr(logid, "invalid botid, err", err, "callbackdata", callback_data)
 		return err
 	}
 	chat_list, err := chat.GetChatList(botid, "private")
 	if err != nil{
-		lib.XLogErr("GetChatList", botid, err)
+		lib.XLogErr(logid, "GetChatList, botid", botid, "err", err)
 		return err
 	}
 	text := fmt.Sprintf("双向机器人一共处理了来自%d个用户的消息", len(chat_list.ChatList))
-	b.SendText(chatid, text)
-	return nil
+	return b.SendText(chatid, text)
 }
 
-func (b *Bot) HandleSwitch(chatid int64, msgid int, callback_data string)error{
+func (b *Bot) HandleSwitch(logid string, chatid int64, msgid int, callback_data string)error{
+	vipinfo, err := GetVipInfo(chatid)
+	if err != nil{
+		lib.XLogErr(logid, "GetVipInfo, chatid", chatid, "err", err)
+		return err
+	}
+	isVip := vipinfo.Expire > time.Now().Unix()
+
 	values := strings.Split(callback_data, "_")
 	if len(values) < 4{
-		lib.XLogErr("invalid callbackdata", chatid, callback_data)
+		lib.XLogErr(logid, "invalid callbackdata, chatid", chatid, "callbackdata", callback_data)
 		return errors.New("invalid callbackdata")
+	}
+	if !isVip && values[3] == "group"{
+		b.SendText(chatid, "仅会员才可以切换到群聊模式")
+		return nil
 	}
 	botid, err := strconv.ParseInt(values[2], 10, 64)
 	if err != nil{
-		lib.XLogErr("ParseInt", callback_data)
+		lib.XLogErr(logid, "ParseInt, callbackdata", callback_data)
 		return err
 	}
 	userid := chatid
 	bot_list, err := GetChatBotList(userid)
 	if err != nil{
-		lib.XLogErr("GetChatBotList", err)
+		lib.XLogErr(logid, "GetChatBotList, err", err)
 		return err
 	}
 	bot_token := ""
@@ -516,22 +632,22 @@ func (b *Bot) HandleSwitch(chatid int64, msgid int, callback_data string)error{
 		if len(values) == 5{
 			groupid, err := strconv.ParseInt(values[4], 10, 64)
 			if err != nil{
-				lib.XLogErr("ParseInt", callback_data)
+				lib.XLogErr(logid, "ParseInt, callbackdata", callback_data)
 				return err
 			}
 			bot_detail.GroupID = groupid
 		}
 		if err := chat.SetChatBotDetail(botid, bot_detail); err != nil{
-			lib.XLogErr("SetChatBotDetail", botid, bot_detail, err)
+			lib.XLogErr(logid, "SetChatBotDetail, botid", botid, "detail", bot_detail, "err", err)
 			return err
 		}
-		lib.XLogInfo("set bot detail succ", botid, bot_detail)
+		lib.XLogInfo(logid, "set bot detail succ, botid", botid, "detail", bot_detail)
 		b.SendText(chatid, "切换成功")
 		return nil
 	}
 	chat_list, err := chat.GetChatList(botid, "group")
 	if err != nil {
-		lib.XLogErr("GetChatList", botid, err)
+		lib.XLogErr(logid, "GetChatList, botid", botid, "err", err)
 		return err
 	}
 	found := false
@@ -553,7 +669,7 @@ func (b *Bot) HandleSwitch(chatid int64, msgid int, callback_data string)error{
 		config := model.GetChatConfig{ChatID:groupid}
 		err := tmp_bot.Call(&config)
 		if err != nil{
-			lib.XLogErr("GetChat", config, err, tmp_bot.BotKey)
+			lib.XLogErr(logid, "GetChat, config", config, "err", err, tmp_bot.BotKey)
 			return err
 		}
 		btn := model.InlineKeyboardButton{Text:config.Response.Title}
@@ -574,7 +690,7 @@ func (b *Bot) HandleSwitch(chatid int64, msgid int, callback_data string)error{
 		ReplyMarkup:markup,
 	}
 	if err := b.BotAPI.Call(&config); err != nil{
-		lib.XLogErr("EditMessageText", config, err)
+		lib.XLogErr(logid, "EditMessageText, config", config, "err", err)
 		return err
 	}
 	return nil
@@ -600,7 +716,7 @@ func (b *Bot)NewStartMessage(chatid int64)(model.Message){
 	return msg
 }
 
-func (b *Bot)HandleReturnStart(chatid int64, msgid int)error{
+func (b *Bot)HandleReturnStart(logid string, chatid int64, msgid int)error{
 	msg := b.NewStartMessage(chatid)
 	config := model.EditMessageTextConfig{
 		ChatID: chatid,
@@ -610,10 +726,14 @@ func (b *Bot)HandleReturnStart(chatid int64, msgid int)error{
 		ReplyMarkup: *(msg.ReplyMarkup),
 	}
 	if err := b.BotAPI.Call(&config); err != nil{
-		lib.XLogErr("EditedMessage", config, err)
+		lib.XLogErr(logid, "EditedMessage, config", config, "error", err)
 		return err
 	}
-	return SetOperStatus(chatid, "init")
+	if err := SetOperStatus(chatid, "init"); err != nil{
+		lib.XLogErr(logid, "SetOperStatus, chatid", chatid, "err", err)
+		return err
+	}
+	return nil
 }
 
 func (b *Bot)NewViewBotMessage(chatid, botid int64, msgid int)(model.Message, error){
@@ -665,7 +785,7 @@ func (b *Bot)NewViewBotMessage(chatid, botid int64, msgid int)(model.Message, er
 	}
 	switchcallbackdata := str_chatid + "_switch_" + str_botid + "_"
 	if len(detail.Mode) == 0 || detail.Mode == "private"{
-		switchmode.Text = "切换到群聊模式"
+		switchmode.Text = "切换到群聊模式(会员专享)"
 		switchcallbackdata += "group"
 	}else{
 		switchmode.Text = "切换到单聊模式"
@@ -691,10 +811,10 @@ func (b *Bot)NewViewBotMessage(chatid, botid int64, msgid int)(model.Message, er
 	return msg, nil
 }
 
-func (b *Bot)HandleReturnViewBot(chatid, botid int64, msgid int)error{
+func (b *Bot)HandleReturnViewBot(logid string, chatid, botid int64, msgid int)error{
 	msg, err := b.NewViewBotMessage(chatid, botid, msgid)
 	if err != nil{
-		lib.XLogErr("NewViewBotMessage", chatid, botid, err)
+		lib.XLogErr(logid, "NewViewBotMessage, chatid", chatid, "botid", botid, "err", err)
 		return err
 	}
 	config := model.EditMessageTextConfig{
@@ -705,39 +825,38 @@ func (b *Bot)HandleReturnViewBot(chatid, botid int64, msgid int)error{
 		ReplyMarkup: *(msg.ReplyMarkup),
 	}
 	if err := b.BotAPI.Call(&config); err != nil{
-		lib.XLogErr("EditedMessage", config, err)
+		lib.XLogErr(logid, "EditedMessage, config", config, "err", err)
 		return err
 	}
 	return nil
 }
 
-func (b *Bot)HandleReturn(chatid int64, callback_data string)error{
-	// chatid_retrun_cmd_args...
+func (b *Bot)HandleReturn(logid string, chatid int64, callback_data string)error{
 	values := strings.Split(callback_data, "_")
 	if len(values) < 4{
 		return errors.New("invalid callbackdata")
 	}
 	msgid, err := strconv.Atoi(values[3])
 	if err != nil{
-		lib.XLogErr("Itoa", callback_data)
+		lib.XLogErr(logid, "Itoa, callbackdata", callback_data)
 		return err
 	}
 	if values[2] == "start"{
-		if err := b.HandleReturnStart(chatid ,msgid); err != nil{
-			lib.XLogErr("HandleReturnStart", chatid, msgid, err)
+		if err := b.HandleReturnStart(logid, chatid ,msgid); err != nil{
+			lib.XLogErr(logid, "HandleReturnStart, chatid", chatid, "msgid", msgid, "err", err)
 		}
 	}else if values[2] == "mybot"{
-		if err := b.HandleReturnMyBot(chatid, msgid); err != nil{
-			lib.XLogErr("HandleReturnMyBot", chatid, msgid, err)
+		if err := b.HandleReturnMyBot(logid, chatid, msgid); err != nil{
+			lib.XLogErr(logid, "HandleReturnMyBot, chatid", chatid, "msgid", msgid, "err", err)
 		}
 	}else if values[2] == "viewbot"{
 		botid, err := strconv.ParseInt(values[4], 10, 64)
 		if err != nil{
-			lib.XLogErr("ParseInt", err, callback_data)
+			lib.XLogErr(logid, "ParseInt, err", err, "callbackdata", callback_data)
 			return err
 		}
-		if err := b.HandleReturnViewBot(chatid, botid, msgid); err != nil{
-			lib.XLogErr("HandleReturnViewBot", chatid, msgid, err)
+		if err := b.HandleReturnViewBot(logid, chatid, botid, msgid); err != nil{
+			lib.XLogErr(logid, "HandleReturnViewBot, chatid", chatid, "msgid", msgid, "err", err)
 		}
 	}
 
@@ -748,39 +867,44 @@ func (b *Bot) HandleCallback(callback *model.CallbackQuery){
 	callback_data := callback.Data
 	values := strings.Split(callback_data, "_")
 	if len(values) < 2{
-		lib.XLogErr("invalid callbackdata", callback.ID, callback_data)
+		lib.XLogErr(callback.ID, "invalid callbackdata", callback_data)
 		return
 	}
 	cmd := values[1]
 	msg := callback.Message
+	logid := callback.ID
 	if cmd == "return"{
-		if err := b.HandleReturn(msg.Chat.ID, callback_data); err != nil{
-			lib.XLogErr("HandleReturn", err, callback.ID, callback_data)
+		if err := b.HandleReturn(logid, msg.Chat.ID, callback_data); err != nil{
+			lib.XLogErr(logid, "HandleReturn, err", err, "callbackdata", callback_data)
 		}
 	}else if cmd == "newbot"{
-		if err := b.HandleNewBot(msg.Chat.ID, msg.MessageID, callback_data); err != nil{
-			lib.XLogErr("HandleNewBot", err, callback.ID, callback_data)
+		if err := b.HandleNewBot(logid, msg.Chat.ID, msg.MessageID, callback_data); err != nil{
+			lib.XLogErr(logid, "HandleNewBot, err", err, "callbackdata", callback_data)
 		}
 	}else if cmd == "mybot"{
-		if err := b.HandleMyBot(msg.Chat.ID, msg.MessageID, callback_data); err != nil{
-			lib.XLogErr("HandleMyBot", err, callback.ID, callback_data)
+		if err := b.HandleMyBot(logid, msg.Chat.ID, msg.MessageID, callback_data); err != nil{
+			lib.XLogErr(logid, "HandleMyBot, err", err, "callbackdata", callback_data)
 		}
 	}else if cmd == "viewbot"{
-		if err := b.HandleViewBot(msg.Chat.ID, msg.MessageID, callback_data); err != nil{
-			lib.XLogErr("HandleViewBot", err, callback.ID, callback_data)
+		if err := b.HandleViewBot(logid, msg.Chat.ID, msg.MessageID, callback_data); err != nil{
+			lib.XLogErr(logid, "HandleViewBot, err", err, "callbackdata", callback_data)
 		}
 	}else if cmd == "stat"{
-		if err := b.HandleStatBot(msg.Chat.ID, callback_data); err != nil{
-			lib.XLogErr("HandleStatBot", err, callback.ID, callback_data)
+		if err := b.HandleStatBot(logid, msg.Chat.ID, callback_data); err != nil{
+			lib.XLogErr(logid, "HandleStatBot, err", err, "callbackdata", callback_data)
 		}
 		return
 	}else if cmd == "delete"{
-		if err := b.HandleDeleteBot(msg.Chat.ID, callback_data); err != nil{
-			lib.XLogErr("HandleDeleteBot", err, callback.ID, callback_data);
+		if err := b.HandleDeleteBot(logid, msg.Chat.ID, msg.MessageID, callback_data); err != nil{
+			lib.XLogErr(logid, "HandleDeleteBot, err", err, "callbackdata", callback_data)
 		}
 	}else if cmd == "switch"{
-		if err := b.HandleSwitch(msg.Chat.ID, msg.MessageID, callback_data); err != nil{
-			lib.XLogErr("HandleSwitch", err, callback.ID, callback_data)
+		if err := b.HandleSwitch(logid, msg.Chat.ID, msg.MessageID, callback_data); err != nil{
+			lib.XLogErr(logid, "HandleSwitch, err", err, "callbackdata", callback_data)
+		}
+	}else if cmd == "confirmdelete"{
+		if err := b.HandleConfirmDelete(logid, msg.Chat.ID, msg.MessageID, callback_data); err != nil{
+			lib.XLogErr(logid, "HandleConfirmDelete, err", err, "callbackdata", callback_data)
 		}
 	}
 	answer := model.AnswerCallbackQueryConfig{
@@ -923,15 +1047,16 @@ func (b *Bot) HandleUpdates() {
 		command := update.Message.Command()
 		args := update.Message.CommandArguments()
 
+		logid := strconv.Itoa(update.UpdateID)
 		switch command {
 		case "start":
-			go b.HandleStart(update.Message.Chat.ID)
+			go b.HandleStart(logid, update.Message.Chat.ID)
 			continue
 		case "newbot":
-			go b.HandleNewBot(update.Message.Chat.ID, update.Message.MessageID, "")
+			go b.HandleNewBot(logid, update.Message.Chat.ID, update.Message.MessageID, "")
 			continue
 		case "mybot":
-			go b.HandleMyBot(update.Message.Chat.ID, update.Message.MessageID, "")
+			go b.HandleMyBot(logid, update.Message.Chat.ID, update.Message.MessageID, "")
 			continue
 		case "setvip":
 			go b.SetVip(update.Message.Chat.ID, args)
@@ -976,6 +1101,9 @@ func InitConfig(){
 			g_sBotKey = line[idx + 1:]
 		}else if line[0: idx] == "admin"{
 			adminuser = line[idx + 1:]
+		}else if line[0: idx] == "follow_groups"{
+			groups := strings.Split(line[idx + 1:], ",")
+			g_follow_groups = groups
 		}
 	}
 }
