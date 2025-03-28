@@ -87,7 +87,7 @@ func (bot *TBot)CallV2(config interface{})error{
 		hit := false
 		for i, item := range bot.BakKeys{
 			if item.IsBlock{
-				if item.BlockTo <= time.Now().Unix() {
+				if item.BlockTo > time.Now().Unix() {
 					continue
 				}else{
 					bot.BakKeys[i].IsBlock = false
