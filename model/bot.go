@@ -22,6 +22,7 @@ type TBot struct {
 	BakKey string
 	UseBakKey bool
 	BakKeys []KeyStatus
+	ShutdownChannel chan interface{}
 }
 
 func (bot *TBot)Request(method, param string)(string, error){
@@ -200,6 +201,13 @@ func (bot *TBot)GetUpdateChan(config *UpdateConfig)<-chan Update{
 	ch := make(chan Update, 20)
 	go func(){
 		for {
+			select {
+			case <-bot.ShutdownChannel:
+				close(ch)
+				return
+			default:
+			}
+			config.Response = nil
 			err := bot.GetUpdates(config)
 			if err != nil {
 				lib.XLogErr("bot.GetUpdates", *config, err)

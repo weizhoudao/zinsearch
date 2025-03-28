@@ -51,6 +51,13 @@ type GetChatMemberCountConfig struct{
 	ChatID any `json:"chat_id"`
 }
 
+type GetChatMemberConfig struct {
+	ChatID any `json:"chat_id"`
+	UserID int64 `json:"user_id"`
+
+	Response  ChatMember `json:"result"`
+}
+
 type UnbanChatMemberConfig struct {
 	BoolConfig
 	ChatID int64 `json:"chat_id"`
@@ -178,6 +185,8 @@ type PinChatMessageConfig struct {
 type CreateForumTopicConfig struct {
 	ChatID int64 `json:"chat_id"`
 	Name string `json:"name"`
+
+	Response CreateForumTopicResult `json:"result"`
 }
 
 type CreateForumTopicResult struct {
@@ -255,6 +264,7 @@ type ForwardMessageConfig struct{
 	ChatID any `json:"chat_id,omitempty"`
 	FromChatID any `json:"from_chat_id,omitempty"`
 	MessageID int `json:"message_id,omitempty"`
+	MessageThreadId int `json:"message_thread_id"`
 
 	Response Message `json:"result,omitempty"`
 }
