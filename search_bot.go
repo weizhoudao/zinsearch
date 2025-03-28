@@ -400,7 +400,8 @@ func searchIndex(updateid int, query string, page int, pageSize int) ([]zincsear
 		},
 		MaxResults: pageSize,
 		From: page,
-		SortFields: []string{"-user_count"},
+		SortFields: []string{"-_score"},
+		//SortFields: []string{"-user_count"},
 	}
 	//lib.XLogInfo(updateid, searchReq)
 	client := zincsearch.NewClient("http://localhost:4080", zincSearchUser, zincSearchPasswd)
