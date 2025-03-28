@@ -39,7 +39,7 @@ var (
 	drainageKeywords = []string{
 		"加群", "QQ群", "入群", "关注公众号", "扫码加入",
 		"点击咨询", "联系客服", "私信", "添加好友", "领红包",
-		"福利群", "抖音关注", "快手关注", "关注获取",
+		"福利群", "抖音关注", "快手关注", "关注获取","日结",
 	}
 	// 粗口词库（示例部分词汇，实际需要更完整的词库）
 	profanityWords = []string{
@@ -294,6 +294,12 @@ func main() {
 				continue
 			}
 			if update.Message != nil{
+				if update.Message.IsCommand(){
+					continue
+				}
+				if update.Message.From.UserName == "GroupAnonymousBot" || update.Message.From.FirstName == "Telegram"{
+					continue
+				}
 				if len(update.Message.Text) > 0 || len(update.Message.Caption) > 0{
 					go CheckMessage(update.Message)
 				}
