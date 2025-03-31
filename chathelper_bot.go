@@ -707,8 +707,8 @@ func (b *Bot)NewStartMessage(chatid int64)(model.Message){
 	mybot := model.InlineKeyboardButton{Text:"查看我的双向机器人"}
 	mybot_callback := user_chatid + "_" + "mybot"
 	mybot.CallbackData = &mybot_callback
-	buyvip := model.InlineKeyboardButton{Text:"购买高级版"}
-	buyvip_url := "https://t.me/beitai5bot"
+	buyvip := model.InlineKeyboardButton{Text:"购买会员"}
+	buyvip_url := "https://t.me/chathelperkfbot"
 	buyvip.URL = &buyvip_url
 	var markup model.InlineKeyboardMarkup
 	markup.InlineKeyboard = append(markup.InlineKeyboard, []model.InlineKeyboardButton{newbot}, []model.InlineKeyboardButton{mybot}, []model.InlineKeyboardButton{buyvip})

@@ -269,6 +269,10 @@ type ForwardMessageConfig struct{
 	Response Message `json:"result,omitempty"`
 }
 
+type SetMyCommandsConfig struct{
+	Commands []BotCommand `json:"commands,omitempty"`
+}
+
 type AdFeed struct {
 	Title string `json:"title,omitempty"`
 	ChatID string `json:"chat_id,omitempty"`

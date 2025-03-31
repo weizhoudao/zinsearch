@@ -45,7 +45,7 @@ func InitConfig(){
 		key := line[0 : idx]
 		value := line[idx + 1 :]
 		if key == "key" {
-			g_str_botkey = key
+			g_str_botkey = value
 		}else if line[0: idx] == "admin"{
 			tmp, err := strconv.ParseInt(value, 10, 64)
 			if err != nil{
